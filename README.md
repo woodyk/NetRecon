@@ -17,6 +17,7 @@
 ## Requirements
 
 - Python 3.x
+- https://abuseipdb.com API KEY
 
 ## Installation
 
@@ -31,6 +32,11 @@
    python3 -m venv .venv
    . .venv/bin/activate
    pip install -r requirements.txt
+   ```
+
+3. Add the Abuseipdb API KEY
+   ```bash
+   export ABUSEIPDB_API_KEY="<your_api_key>"
    ```
 
 ## Usage
