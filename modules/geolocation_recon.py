@@ -6,7 +6,7 @@ import requests
 
 def collect(query):
     url = f"http://ip-api.com/json/{query}"
-    fields = "status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query"
+    fields = "status,message,continent,continentCode,country,countryCode,region,regionName,city,district,zip,lat,lon,timezone,offset,currency,isp,org,as,asname,reverse,mobile,proxy,hosting,query"
     params = {"fields": fields}
 
     try:

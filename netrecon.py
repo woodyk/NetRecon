@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 #
-# netrecon.py
+# File: netrecon.py
+# Author: Wadih Khairallah
+# Description: 
+# Created: 2025-04-27 20:38:02
 
 import json
 import argparse

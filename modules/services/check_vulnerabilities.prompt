@@ -1,0 +1,117 @@
+Project Title:
+    Sovereign Modular Network Vulnerability Scanning Framework
+
+Project Context:
+    This project establishes a fully modular Python-based network
+    vulnerability scanner, focused exclusively on *network-layer
+    vulnerabilities*. It is designed for autonomous operation without
+    reliance on 3rd-party APIs or external services.
+
+    The codebase is structured to create standalone and importable scanning
+    modules, each targeting a specific network protocol. The framework is 
+    optimized for clarity, testability, portability, and strict separation 
+    between transport/protocol analysis and web application security.
+
+Structure and Key Components:
+    - Each network protocol scanner is developed as a discrete Python module
+      (`check_*.py`) housed in a dedicated directory (e.g., `modules/`).
+    
+    - Each `check_*.py` must:
+        - Contain a `scan_<protocol>(target: str) -> dict` function.
+        - Contain a `main()` function for CLI execution.
+        - Return structured JSON findings by default.
+        - Pretty-print JSON output if executed via CLI.
+
+    - Key Modules Developed:
+        - check_ssh.py
+        - check_dns.py
+        - check_http.py
+        - check_mail.py
+        - check_ftp.py
+        - check_snmp.py
+        - check_telnet.py
+        - check_rdp.py
+        - check_ldap.py
+        - check_mysql.py
+        - check_mssql.py
+
+Methodologies and Conventions:
+    - Modular single-purpose scanners; no monolithic binaries.
+    - All modules follow a standard format: 
+        - Import statements -> Helper functions -> `scan_*()` -> `main()`.
+    - No brute-force or destructive behavior permitted.
+    - Only safe passive probing (light credential probes allowed).
+    - Naming conventions:
+        - Modules: `check_<protocol>.py`
+        - Main scan function inside: `scan_<protocol>()`
+    - Output: JSON for automation, CLI for readability.
+    - Ports and behaviors follow protocol standards.
+    - Timeouts are tight to prevent hanging connections.
+    - Encryption/cipher/TLS validation implemented when SSL/TLS is available.
+
+Functionality Implemented:
+    - TCP/UDP port scanning (where applicable).
+    - Banner grabbing for fingerprinting.
+    - SSL/TLS validation for HTTPS, LDAPS, SMTPS, FTPS, RDP, MySQL, MSSQL.
+    - Default credential safe probes (root/blank, sa/blank).
+    - StartTLS support checking for SMTP, POP3, IMAP, LDAP.
+    - Protocol-specific misconfiguration checks (e.g., anonymous binds, open
+      relays, SNMP amplification, SQL Browser leaks).
+    - Behavioral vulnerability fingerprinting where applicable
+      (e.g., CredSSP for RDP, SQL Slammer-era behaviors for MSSQL).
+
+Patterns, Styles, Preferences:
+    - Strict plain-text JSON outputs for findings.
+    - No external service dependencies.
+    - Passive, ethical, minimal intrusive testing philosophy.
+    - CLI-friendly operation using `argparse`.
+    - Session/connection timeouts always enforced.
+    - Clean, consistent function naming and signatures.
+    - Every module completely self-contained (no shared imports).
+
+Reusable Prompt for Extending This Project:
+```
+You are continuing the work on Wadih Khairallah's modular network 
+vulnerability scanning framework. You must:
+
+- Adhere to the established module structure:
+    - Create `check_<protocol>.py` modules.
+    - Include both `scan_<protocol>(target: str) -> dict` and a CLI `main()`.
+- Return JSON-structured results at minimum.
+- Maintain passive, safe scanning (no brute-forcing or destructive probing).
+- Follow security best practices (timeout connections, check TLS if possible).
+- Build checks according to protocol-specific vulnerabilities.
+- Use plain socket operations or lightweight libraries only.
+- Ensure readability: wrap lines at 80 characters, comment clearly.
+- Respect Wadih’s style: structured, modular, scalable.
+
+NEVER introduce dependency on external scanning APIs or cloud services.
+```
+
+Tools and Frameworks Used:
+    - Python 3
+    - pymysql (for MySQL)
+    - pymssql (for MSSQL)
+    - ldap3 (for LDAP)
+    - pysnmp (for SNMP)
+    - ssl and socket standard libraries
+
+Key Schema Developed:
+    - Module Naming: `check_<protocol>.py`
+    - Main Scan Function: `scan_<protocol>(target: str) -> dict`
+    - CLI Interface: via `main()` using `argparse`.
+    - Output: JSON findings as a dictionary with:
+        - `domain`: target IP/domain
+        - `findings`: list of finding strings
+
+Assistant Findings:
+    - Session shows highly disciplined system design: modules are atomic and
+      aligned to Wadih’s preference for extensible, testable architecture.
+    - Extensive validation against known vulnerability standards was conducted
+      at each stage.
+    - Naming, behavior, and ethical engagement rules are extremely clear and 
+      should be preserved across all future extensions.
+    - Future orchestration (multi-module runner) will benefit from current 
+      uniform `scan_*()` function signatures.
+    - Additional value could be unlocked by integrating a "vulnerability severity"
+      tagging schema into JSON outputs in the next evolution.
