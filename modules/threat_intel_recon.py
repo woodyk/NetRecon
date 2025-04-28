@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# File: threat_intel_recon.py
+# Author: Wadih Khairallah
+# Description: 
+# Created: 2025-04-28 18:23:02
+#!/usr/bin/env python3
 #
 # threat_intel_recon.py
 

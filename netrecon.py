@@ -5,88 +5,118 @@
 # Author: Wadih Khairallah
 # Description: 
 # Created: 2025-04-27 20:38:02
-# Modified: 2025-04-28 15:50:22
+# Modified: 2025-04-28 18:16:24
 
-import json
-import argparse
-import ipaddress
-import importlib
-import pkgutil
 import os
+import sys
+import json
+import socket
+import ipaddress
+import importlib.util
+import traceback
+from datetime import datetime, timezone
 
-# Adjust the directory path for the modules folder
-MODULES_DIR = os.path.join(os.path.dirname(__file__), "modules")
+# ===== Utility Functions =====
 
-def expand_ips(ips):
-    """Expands a single IP, CIDR block, or comma-separated list into individual IPs."""
-    expanded_ips = []
-    for ip in ips.split(","):
-        ip = ip.strip()
-        try:
-            # Check if it's a CIDR block
-            network = ipaddress.ip_network(ip, strict=False)
-            expanded_ips.extend([str(addr) for addr in network.hosts()])
-        except ValueError:
-            # If not a CIDR block, treat as a single IP
-            expanded_ips.append(ip)
-    return expanded_ips
+def expand_ips(target):
+    """
+    Expand the input target to a list of IPs.
+    Supports:
+        - Single IP
+        - CIDR block
+        - Domain (resolves to IP)
+    """
+    ips = []
+    try:
+        # CIDR notation
+        if "/" in target:
+            net = ipaddress.ip_network(target, strict=False)
+            for ip in net.hosts():
+                ips.append(str(ip))
+        else:
+            # Try resolving domain to IP
+            ip = socket.gethostbyname(target)
+            ips.append(ip)
+    except Exception as e:
+        ips.append(target)  # fallback: treat as is
+    return ips
 
-def aggregate_data(ip):
-    """Dynamically aggregates data from all modules in the modules package for a given IP."""
-    results = {}
-    
-    # Discover and load all modules in the "modules" directory
-    for loader, module_name, is_pkg in pkgutil.iter_modules([MODULES_DIR]):
-        module = importlib.import_module(f"modules.{module_name}")
-        
-        # Check if the module has a 'collect' function
-        if hasattr(module, 'collect'):
-            try:
-                # Run the 'collect' function and add the output to results
-                results[module_name] = module.collect(ip)
-            except Exception as e:
-                results[module_name] = {"error": str(e)}
-
+def aggregate_data(results):
+    """
+    Post-process results.
+    Currently a placeholder for future normalization.
+    """
+    # Example: Move *_error fields under 'errors' sub-block in each module
+    for module, data in results.items():
+        if isinstance(data, dict):
+            errors = {}
+            keys_to_remove = []
+            for key in data:
+                if key.endswith("_error"):
+                    errors[key] = data[key]
+                    keys_to_remove.append(key)
+            for key in keys_to_remove:
+                del data[key]
+            if errors:
+                data['errors'] = errors
     return results
 
-def run_recon(ip_addresses, save=False):
+def dynamic_import(module_path, module_name):
+    """
+    Dynamically import a Python module given a path.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+# ===== Orchestration Core =====
+
+def run_recon_modules(target, modules_dir="modules"):
+    """
+    Run all *_recon.py modules on the target.
+    """
     results = {}
+    module_files = [f for f in os.listdir(modules_dir) if f.endswith("_recon.py")]
 
-    for ip in ip_addresses:
-        # Aggregate data for the IP
-        ip_data = aggregate_data(ip)
-        results[ip] = ip_data
+    for module_file in sorted(module_files):  # alphabetical execution
+        module_name = module_file[:-3]  # remove '.py'
+        module_path = os.path.join(modules_dir, module_file)
 
-        # Pretty print the JSON to stdout
-        print(f"\nResults for {ip}:\n")
-        print(json.dumps(ip_data, indent=4))
-
-        # Save to individual files if the save option is enabled
-        if save:
-            with open(f"{ip}.json", "w") as file:
-                json.dump(ip_data, file, indent=4)
-                print(f"\nData for {ip} saved to {ip}.json")
+        try:
+            module = dynamic_import(module_path, module_name)
+            if hasattr(module, "collect"):
+                output = module.collect(target)
+                results[module_name] = output
+            else:
+                results[module_name] = {"error": "Missing 'collect' function"}
+        except Exception as e:
+            results[module_name] = {
+                "error": f"Failed to run {module_name}: {str(e)}",
+                "traceback": traceback.format_exc()
+            }
 
     return results
 
 def main():
-    parser = argparse.ArgumentParser(description="NetRecon IP Reconnaissance Tool")
-    parser.add_argument(
-        "ips",
-        help="A single IP address, CIDR block, or a comma-separated list of IP addresses or CIDR blocks to scan"
-    )
-    parser.add_argument(
-        "--save",
-        action="store_true",
-        help="Save results to individual JSON files"
-    )
-    args = parser.parse_args()
+    if len(sys.argv) != 2:
+        print("Usage: ./netrecon.py <target>")
+        sys.exit(1)
 
-    # Expand any CIDR blocks or comma-separated lists into individual IPs
-    ip_addresses = expand_ips(args.ips)
+    input_target = sys.argv[1]
+    expanded_targets = expand_ips(input_target)
 
-    # Run reconnaissance with or without saving
-    run_recon(ip_addresses, save=args.save)
+    final_results = {}
+
+    for target in expanded_targets:
+        print(f"\n[+] Running NetRecon modules on: {target}\n")
+        results = run_recon_modules(target)
+        results["timestamp"] = datetime.now(timezone.utc).isoformat()
+        aggregated = aggregate_data(results)
+        final_results[target] = aggregated
+
+    print(json.dumps(final_results, indent=4))
 
 if __name__ == "__main__":
     main()
+

@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# File: blacklist_recon.py
+# Author: Wadih Khairallah
+# Description: 
+# Created: 2025-04-28 18:22:26
+#!/usr/bin/env python3
 #
 # blacklist_recon.py
 
