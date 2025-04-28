@@ -3,82 +3,106 @@
 #
 # File: check_telnet.py
 # Author: Wadih Khairallah
-# Description: 
-# Created: 2025-04-27 21:30:12
-# Modified: 2025-04-27 21:34:26
+# Description: Telnet Vulnerability Scanner for NetRecon
+# Updated: 2025-04-28
 
-import argparse
 import socket
 import json
 import time
+import re
+import sys
+from datetime import datetime, timezone
 
 TIMEOUT = 5
-TELNET_PORT = 23
+DEFAULT_PORT = 23
 
 COMMON_DEFAULT_BANNERS = [
-    "login:", "Username:", "Password:"
+    "login:", "username:", "password:"
 ]
 
-def grab_telnet_banner(host, findings):
+def is_ip(address):
+    ip_pattern = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$|^([a-fA-F0-9:]+:+)+[a-fA-F0-9]+$")
+    return bool(ip_pattern.match(address))
+
+def parse_target(target):
+    parts = target.strip().lower().split(':')
+    host = parts[0]
+    port = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+    return host, port
+
+def check_port_open(host, port):
     try:
-        sock = socket.create_connection((host, TELNET_PORT), timeout=TIMEOUT)
+        with socket.create_connection((host, port), timeout=TIMEOUT):
+            return True
+    except Exception:
+        return False
+
+def grab_telnet_banner(host, port):
+    try:
+        sock = socket.create_connection((host, port), timeout=TIMEOUT)
         banner = sock.recv(1024).decode(errors='ignore').strip()
         sock.close()
         if banner:
-            findings.append(f"Telnet banner: {banner}")
-            # Detect if it leaks system info
             if any(keyword in banner.lower() for keyword in ["linux", "unix", "cisco", "windows", "openbsd", "router", "switch"]):
-                findings.append(f"Sensitive system info exposed in Telnet banner: {banner}")
-        else:
-            findings.append("Telnet server responded but no banner text was retrieved.")
-    except Exception:
-        findings.append("Failed to retrieve Telnet banner.")
+                return {"status": "fail", "detail": f"Sensitive system info exposed in Telnet banner: {banner}"}
+            else:
+                return {"status": "info", "detail": f"Telnet banner: {banner}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Failed to grab Telnet banner: {str(e)}"}
+    return {"status": "error", "detail": "No Telnet banner retrieved."}
 
-def detect_plaintext_auth(host, findings):
+def detect_plaintext_auth(host, port):
     try:
-        sock = socket.create_connection((host, TELNET_PORT), timeout=TIMEOUT)
+        sock = socket.create_connection((host, port), timeout=TIMEOUT)
         sock.settimeout(TIMEOUT)
         time.sleep(1)
         response = sock.recv(4096).decode(errors='ignore')
         sock.close()
         if any(phrase.lower() in response.lower() for phrase in COMMON_DEFAULT_BANNERS):
-            findings.append("Telnet server prompts for credentials over plaintext (insecure).")
+            return {"status": "fail", "detail": "Telnet server prompts for credentials over plaintext (insecure)."}
         else:
-            findings.append("No immediate plaintext authentication prompts detected.")
-    except Exception:
-        findings.append("Plaintext authentication detection failed.")
+            return {"status": "pass", "detail": "No immediate plaintext authentication prompts detected."}
+    except Exception as e:
+        return {"status": "error", "detail": f"Plaintext authentication detection failed: {str(e)}"}
 
-def scan_telnet(target: str) -> dict:
-    findings = []
+def collect(target: str):
+    host, port = parse_target(target)
+    port = port if port else DEFAULT_PORT
+    open_ports = []
+    vulnerabilities = {}
+    summary = []
 
-    parsed_target = target.replace('http://', '').replace('https://', '').split('/')[0]
+    if check_port_open(host, port):
+        open_ports.append(port)
+    else:
+        return {
+            "target": host,
+            "port": [port],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "open": False,
+            "vulnerabilities": {},
+            "summary": ["Telnet port not reachable."]
+        }
 
-    try:
-        sock = socket.create_connection((parsed_target, TELNET_PORT), timeout=TIMEOUT)
-        findings.append(f"Telnet port {TELNET_PORT}/TCP is open.")
-        sock.close()
-    except Exception:
-        findings.append(f"Telnet port {TELNET_PORT}/TCP is closed or filtered.")
-        return {"domain": parsed_target, "findings": findings}
-
-    # If port open, proceed with deeper checks
-    grab_telnet_banner(parsed_target, findings)
-    detect_plaintext_auth(parsed_target, findings)
+    vulnerabilities["telnet_banner_check"] = grab_telnet_banner(host, port)
+    vulnerabilities["plaintext_auth_check"] = detect_plaintext_auth(host, port)
 
     return {
-        "domain": parsed_target,
-        "findings": findings
+        "target": host,
+        "port": open_ports,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "open": True,
+        "vulnerabilities": vulnerabilities,
+        "summary": summary
     }
 
-def main():
-    parser = argparse.ArgumentParser(description="Telnet Service Vulnerability Scanner")
-    parser.add_argument("--target", required=True, help="Target domain or IP")
-    args = parser.parse_args()
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python3 check_telnet.py <target> or <target:port>")
+        sys.exit(1)
 
-    result = scan_telnet(args.target)
+    target = sys.argv[1]
+    result = collect(target)
 
     print(json.dumps(result, indent=4))
-
-if __name__ == "__main__":
-    main()
 

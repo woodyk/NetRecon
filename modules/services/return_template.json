@@ -1,0 +1,42 @@
+Minimal Usage Rules
+target is always what collect(target) was called with.
+
+port is always the actual port number attempted (even if default like 53, 80, 443).
+
+timestamp is always the current UTC time when the scan began.
+
+open is true if a successful interaction with service; false if port closed, timeout, or refused.
+
+vulnerabilities contains named checks (could be empty if open: false).
+
+summary is a human-focused high-level overview (could be empty if no issues).
+
+{
+    "target": "<string - target host or IP originally passed to collect()>",
+    "port": [
+        <integer - scanned port>,
+        <integer - another port if multiple>
+    ],
+    "timestamp": "<ISO8601 UTC timestamp, e.g., '2025-04-28T22:08:30.482120'>",
+    "open": <boolean - true if any port was reachable>,
+    "vulnerabilities": {
+        "<vulnerability_check_name>": {
+            "status": "<'pass' | 'fail' | 'info' | 'error'>",
+            "detail": "<string - detailed result description>",
+            "summary": [
+                "<optional additional line 1>",
+                "<optional additional line 2>",
+                "<optional additional line 3>"
+            ]
+        },
+        "<another_vulnerability_check>": {
+            ...
+        }
+    },
+    "summary": [
+        "<string - general scan summary line 1>",
+        "<string - general scan summary line 2>",
+        "<etc>"
+    ]
+}
+

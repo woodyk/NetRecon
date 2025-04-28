@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# File: dns_recon.py
+# Author: Wadih Khairallah
+# Description: 
+# Created: 2025-04-28 15:53:58
+# Modified: 2025-04-28 17:49:50
+#!/usr/bin/env python3
 #
 # dns_recon.py
 

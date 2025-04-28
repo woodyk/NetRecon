@@ -3,15 +3,19 @@
 #
 # File: check_ssh.py
 # Author: Wadih Khairallah
-# Description: 
-# Created: 2025-04-27 20:50:53
-# Modified: 2025-04-27 21:06:06
+# Description: SSH Vulnerability Scanner for NetRecon
+# Updated: 2025-04-28
 
 import socket
-import argparse
 import re
 import paramiko
 import json
+import sys
+from datetime import datetime, timezone
+
+# Constants
+TIMEOUT = 5
+DEFAULT_PORT = 22
 
 # Known vulnerable OpenSSH versions and CVEs
 VULNERABLE_OPENSSH_VERSIONS = {
@@ -35,104 +39,138 @@ WEAK_KEY_TYPES = [
     "ecdsa-sha2-nistp521",
 ]
 
-def parse_banner(banner: str, findings: list):
-    if banner.startswith("SSH-1."):
-        findings.append("Insecure SSH protocol detected: SSHv1 (obsolete and insecure)")
+def is_ip(address):
+    ip_pattern = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$|^([a-fA-F0-9:]+:+)+[a-fA-F0-9]+$")
+    return bool(ip_pattern.match(address))
 
-    openssh_match = re.search(r"OpenSSH[_-](\d+\.\d+)", banner)
-    if openssh_match:
-        version = openssh_match.group(1)
-        findings.append(f"Detected OpenSSH version {version}")
+def parse_target(target):
+    parts = target.strip().lower().split(':')
+    host = parts[0]
+    port = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+    return host, port
 
-        if version in VULNERABLE_OPENSSH_VERSIONS:
-            cves = VULNERABLE_OPENSSH_VERSIONS[version]
-            findings.append(f"Known vulnerabilities for OpenSSH {version}: {', '.join(cves)}")
-    else:
-        findings.append("Non-standard SSH server detected.")
-
-def enumerate_auth_methods(ip: str, port: int, findings: list, timeout=5):
+def check_port_open(host, port):
     try:
-        transport = paramiko.Transport((ip, port))
-        transport.start_client(timeout=timeout)
+        with socket.create_connection((host, port), timeout=TIMEOUT):
+            return True
+    except Exception:
+        return False
+
+def grab_banner(host, port):
+    try:
+        with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
+            banner = sock.recv(1024).decode(errors='ignore').strip()
+            if banner:
+                return {"status": "info", "detail": f"SSH Banner: {banner}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Failed to grab SSH banner: {str(e)}"}
+    return {"status": "error", "detail": "No SSH banner retrieved."}
+
+def check_openssh_version(banner):
+    try:
+        openssh_match = re.search(r"OpenSSH[_-](\d+\.\d+)", banner)
+        if openssh_match:
+            version = openssh_match.group(1)
+            if version in VULNERABLE_OPENSSH_VERSIONS:
+                cves = VULNERABLE_OPENSSH_VERSIONS[version]
+                return {"status": "fail", "detail": f"OpenSSH {version} vulnerable: {', '.join(cves)}"}
+            else:
+                return {"status": "pass", "detail": f"OpenSSH {version} detected, no known critical vulnerabilities."}
+        return {"status": "info", "detail": "Non-standard SSH server banner, OpenSSH version not detected."}
+    except Exception as e:
+        return {"status": "error", "detail": f"OpenSSH version check failed: {str(e)}"}
+
+def check_authentication_methods(host, port):
+    try:
+        transport = paramiko.Transport((host, port))
+        transport.start_client(timeout=TIMEOUT)
         transport.auth_password(username='', password='')
     except paramiko.ssh_exception.BadAuthenticationType as e:
         supported = e.allowed_types
         if 'password' in supported:
-            findings.append("Password authentication is enabled (may allow brute-force attacks).")
+            return {"status": "fail", "detail": "Password authentication is enabled (may allow brute-force attacks)."}
         else:
-            findings.append(f"Supported authentication methods: {', '.join(supported)}")
+            return {"status": "pass", "detail": f"Authentication methods: {', '.join(supported)}"}
     except Exception as e:
-        findings.append(f"Authentication methods enumeration failed: {str(e)}")
+        return {"status": "error", "detail": f"Authentication methods enumeration failed: {str(e)}"}
     finally:
         try:
             transport.close()
         except:
             pass
 
-def detect_host_key_weakness(ip: str, port: int, findings: list, timeout=5):
+def check_host_key_strength(host, port):
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(ip, port=port, username='invalid', password='invalid', timeout=timeout, allow_agent=False, look_for_keys=False)
+        client.connect(host, port=port, username='invalid', password='invalid', timeout=TIMEOUT, allow_agent=False, look_for_keys=False)
     except paramiko.ssh_exception.SSHException:
-        # Expected due to bad credentials
         pass
     except Exception as e:
-        findings.append(f"Host key retrieval failed: {str(e)}")
-        return
-
-    host_keys = client.get_host_keys()
-    for hostname in host_keys:
-        for key_type in host_keys[hostname].keys():
-            if key_type in WEAK_KEY_TYPES:
-                findings.append(f"Weak host key algorithm detected: {key_type}")
-            else:
-                findings.append(f"Host key algorithm detected: {key_type}")
+        return {"status": "error", "detail": f"Host key retrieval failed: {str(e)}"}
 
     try:
-        client.close()
-    except:
-        pass
+        host_keys = client.get_host_keys()
+        for hostname in host_keys:
+            for key_type in host_keys[hostname].keys():
+                if key_type in WEAK_KEY_TYPES:
+                    return {"status": "fail", "detail": f"Weak host key algorithm detected: {key_type}"}
+                else:
+                    return {"status": "pass", "detail": f"Host key algorithm used: {key_type}"}
+        return {"status": "error", "detail": "No host key information retrieved."}
+    finally:
+        try:
+            client.close()
+        except:
+            pass
 
-def scan_ssh(ip: str, port: int = 22, timeout: int = 5) -> dict:
-    """Remote SSH network vulnerability scan."""
-    banner = None
-    findings = []
+def collect(target: str):
+    host, port = parse_target(target)
+    port = port if port else DEFAULT_PORT
+    open_ports = []
+    vulnerabilities = {}
+    summary = []
 
-    try:
-        with socket.create_connection((ip, port), timeout=timeout) as sock:
-            banner = sock.recv(1024).decode(errors='ignore').strip()
+    if check_port_open(host, port):
+        open_ports.append(port)
+    else:
+        return {
+            "target": host,
+            "port": [port],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "open": False,
+            "vulnerabilities": {},
+            "summary": ["SSH port not reachable."]
+        }
 
-        if banner:
-            parse_banner(banner, findings)
-            enumerate_auth_methods(ip, port, findings, timeout)
-            detect_host_key_weakness(ip, port, findings, timeout)
-        else:
-            findings.append("No SSH banner retrieved.")
+    banner_info = grab_banner(host, port)
+    vulnerabilities["ssh_banner"] = banner_info
 
-    except (socket.timeout, ConnectionRefusedError) as e:
-        findings.append(f"Connection error: {str(e)}")
-    except Exception as e:
-        findings.append(f"Unexpected error: {str(e)}")
+    if banner_info["status"] in ["info", "pass"]:
+        banner_text = banner_info["detail"]
+        vulnerabilities["openssh_version_check"] = check_openssh_version(banner_text)
+    else:
+        vulnerabilities["openssh_version_check"] = {"status": "error", "detail": "OpenSSH version could not be determined."}
+
+    vulnerabilities["auth_methods_check"] = check_authentication_methods(host, port)
+    vulnerabilities["host_key_strength_check"] = check_host_key_strength(host, port)
 
     return {
-        "ip": ip,
-        "port": port,
-        "banner": banner,
-        "findings": findings
+        "target": host,
+        "port": open_ports,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "open": True,
+        "vulnerabilities": vulnerabilities,
+        "summary": summary
     }
 
-def main():
-    parser = argparse.ArgumentParser(description="SSH Network Vulnerability Scanner")
-    parser.add_argument("--ip", required=True, help="Target IP address or hostname")
-    parser.add_argument("--port", type=int, default=22, help="Target port (default 22)")
-    args = parser.parse_args()
-
-    result = scan_ssh(ip=args.ip, port=args.port)
-
-    # Pretty print results
-    print(json.dumps(result, indent=4))
-
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 2:
+        print("Usage: python3 check_ssh.py <target> or <target:port>")
+        sys.exit(1)
+
+    target = sys.argv[1]
+    result = collect(target)
+
+    print(json.dumps(result, indent=4))
 

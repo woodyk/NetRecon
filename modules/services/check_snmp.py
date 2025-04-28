@@ -3,15 +3,15 @@
 #
 # File: check_snmp.py
 # Author: Wadih Khairallah
-# Description: 
-# Created: 2025-04-27 21:28:20
-# Modified: 2025-04-27 21:34:32
+# Description: SNMP Vulnerability Scanner for NetRecon
+# Updated: 2025-04-28
 
-import argparse
 import json
 import socket
+import sys
+import re
+from datetime import datetime, timezone
 from pysnmp.hlapi import *
-import dns.resolver
 
 COMMON_COMMUNITIES = ['public', 'private']
 SENSITIVE_OIDS = {
@@ -21,114 +21,141 @@ SENSITIVE_OIDS = {
     'sysLocation': '1.3.6.1.2.1.1.6.0',
 }
 
-def detect_snmp_version(host, findings):
-    # Try v1 and v2c with public community
-    for version, community in [(1, 'public'), (2, 'public')]:
-        try:
+TIMEOUT = 5
+DEFAULT_SNMP_PORT = 161
+
+def is_ip(address):
+    ip_pattern = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$|^([a-fA-F0-9:]+:+)+[a-fA-F0-9]+$")
+    return bool(ip_pattern.match(address))
+
+def parse_target(target):
+    parts = target.strip().lower().split(':')
+    host = parts[0]
+    port = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+    return host, port
+
+def check_port_open(host, port):
+    try:
+        sock = socket.create_connection((host, port), timeout=TIMEOUT)
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+def detect_snmp_version(host, port):
+    try:
+        for version, community in [(1, 'public'), (2, 'public')]:
             iterator = getCmd(
                 SnmpEngine(),
                 CommunityData(community, mpModel=0 if version == 1 else 1),
-                UdpTransportTarget((host, 161), timeout=2, retries=0),
+                UdpTransportTarget((host, port), timeout=TIMEOUT, retries=0),
                 ContextData(),
                 ObjectType(ObjectIdentity('SNMPv2-MIB', 'sysDescr', 0))
             )
             errorIndication, errorStatus, errorIndex, varBinds = next(iterator)
             if not errorIndication and not errorStatus:
-                findings.append(f"SNMPv{version} detected as responsive.")
-                return
-        except Exception:
-            continue
-    findings.append("SNMPv3 only or no response detected.")
+                return {"status": "pass", "detail": f"SNMPv{version} detected as responsive."}
+        return {"status": "fail", "detail": "No SNMPv1/v2c response detected; possibly SNMPv3 only."}
+    except Exception as e:
+        return {"status": "error", "detail": f"SNMP version detection failed: {str(e)}"}
 
-def test_default_communities(host, findings):
-    for community in COMMON_COMMUNITIES:
-        try:
+def test_default_communities(host, port):
+    try:
+        accepted = []
+        for community in COMMON_COMMUNITIES:
             iterator = getCmd(
                 SnmpEngine(),
                 CommunityData(community),
-                UdpTransportTarget((host, 161), timeout=2, retries=0),
+                UdpTransportTarget((host, port), timeout=TIMEOUT, retries=0),
                 ContextData(),
                 ObjectType(ObjectIdentity('SNMPv2-MIB', 'sysDescr', 0))
             )
             errorIndication, errorStatus, errorIndex, varBinds = next(iterator)
             if not errorIndication and not errorStatus:
-                findings.append(f"Default community string '{community}' is accepted!")
-        except Exception:
-            continue
+                accepted.append(community)
+        if accepted:
+            return {"status": "fail", "detail": f"Accepted default community strings: {', '.join(accepted)}"}
+        return {"status": "pass", "detail": "Default community strings rejected."}
+    except Exception as e:
+        return {"status": "error", "detail": f"Default community test failed: {str(e)}"}
 
-def read_sensitive_oids(host, findings):
-    for label, oid in SENSITIVE_OIDS.items():
-        try:
+def read_sensitive_oids(host, port):
+    try:
+        exposures = []
+        for label, oid in SENSITIVE_OIDS.items():
             iterator = getCmd(
                 SnmpEngine(),
                 CommunityData('public'),
-                UdpTransportTarget((host, 161), timeout=2, retries=0),
+                UdpTransportTarget((host, port), timeout=TIMEOUT, retries=0),
                 ContextData(),
                 ObjectType(ObjectIdentity(oid))
             )
             errorIndication, errorStatus, errorIndex, varBinds = next(iterator)
             if not errorIndication and not errorStatus:
                 for varBind in varBinds:
-                    findings.append(f"{label}: {varBind[1]}")
-        except Exception:
-            continue
+                    exposures.append(f"{label}: {varBind[1]}")
+        if exposures:
+            return {"status": "fail", "detail": "Sensitive SNMP attributes exposed: " + "; ".join(exposures)}
+        return {"status": "pass", "detail": "No sensitive attributes exposed."}
+    except Exception as e:
+        return {"status": "error", "detail": f"Sensitive OID read test failed: {str(e)}"}
 
-def attempt_bulk_walk(host, findings):
+def attempt_bulk_walk(host, port):
     try:
         count = 0
         for (errorIndication, errorStatus, errorIndex, varBinds) in nextCmd(
             SnmpEngine(),
             CommunityData('public'),
-            UdpTransportTarget((host, 161), timeout=2, retries=0),
+            UdpTransportTarget((host, port), timeout=TIMEOUT, retries=0),
             ContextData(),
             ObjectType(ObjectIdentity('SNMPv2-MIB', 'system')),
             lexicographicMode=False,
         ):
             if not errorIndication and not errorStatus:
                 count += 1
-            if count > 50:  # limit reporting
+            if count > 50:
                 break
         if count > 0:
-            findings.append(f"SNMP Walk is possible, {count} objects retrieved.")
-    except Exception:
-        pass
+            return {"status": "fail", "detail": f"SNMP bulk walk possible ({count} entries retrieved)."}
+        return {"status": "pass", "detail": "SNMP bulk walk restricted."}
+    except Exception as e:
+        return {"status": "error", "detail": f"SNMP bulk walk test failed: {str(e)}"}
 
-def test_amplification(host, findings):
+def test_amplification(host, port):
     try:
-        # Send minimal query
-        minimal_request = getCmd(
+        iterator = getCmd(
             SnmpEngine(),
             CommunityData('public'),
-            UdpTransportTarget((host, 161), timeout=2, retries=0),
+            UdpTransportTarget((host, port), timeout=TIMEOUT, retries=0),
             ContextData(),
             ObjectType(ObjectIdentity('SNMPv2-MIB', 'sysName', 0))
         )
-        errorIndication, errorStatus, errorIndex, varBinds = next(minimal_request)
+        errorIndication, errorStatus, errorIndex, varBinds = next(iterator)
         if not errorIndication and not errorStatus:
-            # Response size estimation
             total_bytes = sum(len(str(v)) for v in varBinds)
             if total_bytes > 200:
-                findings.append(f"SNMP server may be vulnerable to amplification (large response: {total_bytes} bytes).")
-    except Exception:
-        pass
+                return {"status": "fail", "detail": f"Potential SNMP amplification risk (response {total_bytes} bytes)."}
+        return {"status": "pass", "detail": "No significant amplification detected."}
+    except Exception as e:
+        return {"status": "error", "detail": f"Amplification test failed: {str(e)}"}
 
-def test_snmp_set_operation(host, findings):
+def test_snmp_set_operation(host, port):
     try:
-        # Attempt safe dummy SET operation (will usually be blocked)
         iterator = setCmd(
             SnmpEngine(),
             CommunityData('public'),
-            UdpTransportTarget((host, 161), timeout=2, retries=0),
+            UdpTransportTarget((host, port), timeout=TIMEOUT, retries=0),
             ContextData(),
             ObjectType(ObjectIdentity('1.3.6.1.2.1.1.4.0'), OctetString('test'))
         )
         errorIndication, errorStatus, errorIndex, varBinds = next(iterator)
         if not errorIndication and not errorStatus:
-            findings.append("SNMP SET allowed without authentication! (Potential critical misconfiguration)")
+            return {"status": "fail", "detail": "SNMP SET allowed without proper authorization!"}
+        return {"status": "pass", "detail": "SNMP SET restricted as expected."}
     except Exception:
-        findings.append("SNMP SET operation rejected (expected).")
+        return {"status": "pass", "detail": "SNMP SET restricted as expected."}
 
-def check_trap_service_exposure(host, findings):
+def check_trap_service_exposure(host):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(2)
@@ -136,40 +163,54 @@ def check_trap_service_exposure(host, findings):
         try:
             data, _ = sock.recvfrom(1024)
             if data:
-                findings.append("SNMP Trap port (UDP 162) is open and responsive.")
+                return {"status": "fail", "detail": "SNMP Trap port (UDP 162) is open and responding."}
         except socket.timeout:
-            findings.append("SNMP Trap port (UDP 162) not responding.")
+            return {"status": "pass", "detail": "SNMP Trap port closed or non-responsive (good)."}
         finally:
             sock.close()
-    except Exception:
-        findings.append("SNMP Trap exposure check failed.")
+    except Exception as e:
+        return {"status": "error", "detail": f"SNMP trap exposure test failed: {str(e)}"}
 
-def scan_snmp(target: str) -> dict:
-    findings = []
-    parsed_target = target.replace('http://', '').replace('https://', '').split('/')[0]
+def collect(target: str):
+    host, port = parse_target(target)
+    port = port if port else DEFAULT_SNMP_PORT
+    vulnerabilities = {}
+    summary = []
 
-    detect_snmp_version(parsed_target, findings)
-    test_default_communities(parsed_target, findings)
-    read_sensitive_oids(parsed_target, findings)
-    attempt_bulk_walk(parsed_target, findings)
-    test_amplification(parsed_target, findings)
-    test_snmp_set_operation(parsed_target, findings)
-    check_trap_service_exposure(parsed_target, findings)
+    if not check_port_open(host, port):
+        return {
+            "target": host,
+            "port": [port],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "open": False,
+            "vulnerabilities": {},
+            "summary": ["SNMP port not reachable."]
+        }
+
+    vulnerabilities["snmp_version_check"] = detect_snmp_version(host, port)
+    vulnerabilities["default_community_check"] = test_default_communities(host, port)
+    vulnerabilities["sensitive_oids_check"] = read_sensitive_oids(host, port)
+    vulnerabilities["bulk_walk_check"] = attempt_bulk_walk(host, port)
+    vulnerabilities["amplification_check"] = test_amplification(host, port)
+    vulnerabilities["snmp_set_check"] = test_snmp_set_operation(host, port)
+    vulnerabilities["trap_exposure_check"] = check_trap_service_exposure(host)
 
     return {
-        "domain": parsed_target,
-        "findings": findings
+        "target": host,
+        "port": [port],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "open": True,
+        "vulnerabilities": vulnerabilities,
+        "summary": summary
     }
 
-def main():
-    parser = argparse.ArgumentParser(description="SNMP Service Vulnerability Scanner")
-    parser.add_argument("--target", required=True, help="Target domain or IP")
-    args = parser.parse_args()
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python3 check_snmp.py <target> or <target:port>")
+        sys.exit(1)
 
-    result = scan_snmp(args.target)
+    target = sys.argv[1]
+    result = collect(target)
 
     print(json.dumps(result, indent=4))
-
-if __name__ == "__main__":
-    main()
 

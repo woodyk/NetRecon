@@ -3,140 +3,165 @@
 #
 # File: check_mysql.py
 # Author: Wadih Khairallah
-# Description: 
-# Created: 2025-04-27 21:36:37
-# Modified: 2025-04-27 21:37:34
+# Description: MySQL Vulnerability Scanner for NetRecon
+# Updated: 2025-04-28
 
-import argparse
 import json
 import socket
 import ssl
 import pymysql
+import sys
+import re
+import time
 from pymysql.constants import CLIENT
+from datetime import datetime, timezone
 
 TIMEOUT = 5
-MYSQL_PORT = 3306
+DEFAULT_MYSQL_PORT = 3306
 
-WEAK_CIPHERS = [
-    "RC4", "3DES", "NULL", "EXPORT", "DES", "MD5", "PSK", "SRP", "DSS"
-]
+WEAK_CIPHERS = ["RC4", "3DES", "NULL", "EXPORT", "DES", "MD5", "PSK", "SRP", "DSS"]
 DEPRECATED_TLS_VERSIONS = ["TLSv1", "TLSv1.1"]
 
-def check_mysql_port(host, findings):
-    try:
-        sock = socket.create_connection((host, MYSQL_PORT), timeout=TIMEOUT)
-        findings.append(f"MySQL port {MYSQL_PORT}/TCP is open.")
-        sock.close()
-    except Exception:
-        findings.append(f"MySQL port {MYSQL_PORT}/TCP is closed or filtered.")
+def is_ip(address):
+    ip_pattern = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$|^([a-fA-F0-9:]+:+)+[a-fA-F0-9]+$")
+    return bool(ip_pattern.match(address))
 
-def grab_mysql_banner(host, findings):
+def parse_target(target):
+    parts = target.strip().lower().split(':')
+    host = parts[0]
+    port = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+    return host, port
+
+def check_port_open(host, port):
     try:
-        sock = socket.create_connection((host, MYSQL_PORT), timeout=TIMEOUT)
+        sock = socket.create_connection((host, port), timeout=TIMEOUT)
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+def grab_mysql_banner(host, port):
+    try:
+        sock = socket.create_connection((host, port), timeout=TIMEOUT)
         banner = sock.recv(1024)
         sock.close()
         if banner:
-            findings.append(f"MySQL server handshake banner: {banner.hex()}")
-        else:
-            findings.append("No MySQL handshake banner received.")
-    except Exception:
-        findings.append("MySQL banner grabbing failed.")
+            return {"status": "info", "detail": f"MySQL handshake banner: {banner.hex()}"}
+        return {"status": "fail", "detail": "No MySQL handshake banner received."}
+    except Exception as e:
+        return {"status": "error", "detail": f"MySQL banner grabbing failed: {str(e)}"}
 
-def check_default_login(host, findings):
+def check_default_login(host, port):
     try:
-        conn = pymysql.connect(host=host, user='root', password='', connect_timeout=TIMEOUT)
-        findings.append("Default root login without password is allowed! Critical misconfiguration.")
+        conn = pymysql.connect(host=host, user='root', password='', port=port, connect_timeout=TIMEOUT)
         conn.close()
+        return {"status": "fail", "detail": "Default root login without password is allowed (critical!)."}
     except pymysql.err.OperationalError as e:
         if "Access denied" in str(e):
-            findings.append("Root login without password denied (expected).")
-        else:
-            findings.append(f"MySQL login test error: {str(e)}")
+            return {"status": "pass", "detail": "Root login without password denied (expected)."}
+        return {"status": "error", "detail": f"MySQL login test error: {str(e)}"}
     except Exception as e:
-        findings.append(f"MySQL default credential check failed: {str(e)}")
+        return {"status": "error", "detail": f"MySQL default credential check failed: {str(e)}"}
 
-def check_ssl_support(host, findings):
+def check_ssl_support(host, port):
     try:
         context = ssl.create_default_context()
         conn = context.wrap_socket(socket.socket(), server_hostname=host)
         conn.settimeout(TIMEOUT)
-        conn.connect((host, MYSQL_PORT))
+        conn.connect((host, port))
         cert = conn.getpeercert()
-
         ssl_version = conn.version()
         cipher = conn.cipher()
+        conn.close()
+
+        issues = []
 
         if cert:
             expire_ts = ssl.cert_time_to_seconds(cert['notAfter'])
-            import time
             if expire_ts < time.time():
-                findings.append(f"Expired SSL certificate detected on MySQL port {MYSQL_PORT}.")
-            issuer = dict(x[0] for x in cert['issuer'])
-            if issuer.get('organizationName', '').lower() == "self-signed":
-                findings.append("Self-signed SSL certificate detected on MySQL server.")
-
+                issues.append("Expired SSL certificate detected.")
+        
         if ssl_version in DEPRECATED_TLS_VERSIONS:
-            findings.append(f"Insecure TLS version {ssl_version} used on MySQL.")
+            issues.append(f"Insecure TLS version {ssl_version}")
 
         if cipher and any(weak in cipher[0] for weak in WEAK_CIPHERS):
-            findings.append(f"Weak SSL cipher used by MySQL server: {cipher[0]}")
+            issues.append(f"Weak cipher detected: {cipher[0]}")
 
-        findings.append(f"MySQL SSL/TLS in use: {ssl_version} with cipher {cipher[0]}")
-        conn.close()
+        if issues:
+            return {"status": "fail", "detail": "; ".join(issues)}
+        return {"status": "pass", "detail": f"MySQL SSL/TLS in use: {ssl_version} with cipher {cipher[0]}"}
     except Exception:
-        findings.append("MySQL SSL/TLS handshake not possible (likely plain TCP or STARTTLS required).")
+        return {"status": "error", "detail": "MySQL SSL/TLS handshake not possible (likely plain TCP or STARTTLS required)."}
 
-def check_auth_plugin(host, findings):
+def check_auth_plugin(host, port):
     try:
-        conn = pymysql.connect(host=host, user='root', password='incorrect', connect_timeout=TIMEOUT)
+        conn = pymysql.connect(host=host, user='root', password='incorrect', port=port, connect_timeout=TIMEOUT)
         conn.close()
     except pymysql.err.OperationalError as e:
         if hasattr(e, 'args') and len(e.args) >= 2:
             auth_error = e.args[1]
             if "plugin" in auth_error.lower():
-                findings.append(f"MySQL authentication plugin exposed: {auth_error}")
-    except Exception:
-        findings.append("Authentication plugin check failed.")
+                return {"status": "info", "detail": f"MySQL authentication plugin exposed: {auth_error}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"MySQL auth plugin check failed: {str(e)}"}
+    return {"status": "pass", "detail": "No authentication plugin information exposed."}
 
-def try_information_schema_access(host, findings):
+def try_information_schema_access(host, port):
     try:
-        conn = pymysql.connect(host=host, user='root', password='incorrect', connect_timeout=TIMEOUT, client_flag=CLIENT.CONNECT_WITH_DB)
+        conn = pymysql.connect(
+            host=host, user='root', password='incorrect', port=port,
+            connect_timeout=TIMEOUT, client_flag=CLIENT.CONNECT_WITH_DB
+        )
         cursor = conn.cursor()
         cursor.execute("SHOW DATABASES;")
         dbs = cursor.fetchall()
         if dbs:
-            findings.append(f"Unauthenticated database enumeration possible: {dbs}")
+            cursor.close()
+            conn.close()
+            return {"status": "fail", "detail": f"Unauthenticated database enumeration possible: {dbs}"}
         cursor.close()
         conn.close()
     except Exception:
-        findings.append("Unauthenticated database enumeration not allowed (expected).")
+        return {"status": "pass", "detail": "Unauthenticated database enumeration not allowed (expected)."}
 
-def scan_mysql(target: str) -> dict:
-    findings = []
+def collect(target: str):
+    host, port = parse_target(target)
+    port = port if port else DEFAULT_MYSQL_PORT
+    vulnerabilities = {}
+    summary = []
 
-    parsed_target = target.replace('http://', '').replace('https://', '').split('/')[0]
+    if not check_port_open(host, port):
+        return {
+            "target": host,
+            "port": [port],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "open": False,
+            "vulnerabilities": {},
+            "summary": ["MySQL port not reachable."]
+        }
 
-    check_mysql_port(parsed_target, findings)
-    grab_mysql_banner(parsed_target, findings)
-    check_default_login(parsed_target, findings)
-    check_ssl_support(parsed_target, findings)
-    check_auth_plugin(parsed_target, findings)
-    try_information_schema_access(parsed_target, findings)
+    vulnerabilities["mysql_banner"] = grab_mysql_banner(host, port)
+    vulnerabilities["mysql_default_login"] = check_default_login(host, port)
+    vulnerabilities["mysql_ssl_support"] = check_ssl_support(host, port)
+    vulnerabilities["mysql_auth_plugin"] = check_auth_plugin(host, port)
+    vulnerabilities["mysql_information_schema"] = try_information_schema_access(host, port)
 
     return {
-        "domain": parsed_target,
-        "findings": findings
+        "target": host,
+        "port": [port],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "open": True,
+        "vulnerabilities": vulnerabilities,
+        "summary": summary
     }
 
-def main():
-    parser = argparse.ArgumentParser(description="MySQL Database Vulnerability Scanner")
-    parser.add_argument("--target", required=True, help="Target domain or IP")
-    args = parser.parse_args()
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python3 check_mysql.py <target> or <target:port>")
+        sys.exit(1)
 
-    result = scan_mysql(args.target)
+    target = sys.argv[1]
+    result = collect(target)
 
     print(json.dumps(result, indent=4))
-
-if __name__ == "__main__":
-    main()
 
