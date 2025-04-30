@@ -5,12 +5,15 @@
 # Author: Wadih Khairallah
 # Description: 
 # Created: 2025-04-28 18:30:55
+# Modified: 2025-04-28 18:36:04
 
 import http.client
-import urllib.parse
 
 def collect(target):
-    result = {}
+    result = {
+        "status": "success",
+        "data": {}
+    }
     try:
         host = target
         port = 80
@@ -24,14 +27,15 @@ def collect(target):
         conn.request("HEAD", "/")
         resp = conn.getresponse()
 
-        result["status"] = resp.status
-        result["reason"] = resp.reason
-        result["headers"] = dict(resp.getheaders())
+        result["data"]["status"] = resp.status
+        result["data"]["reason"] = resp.reason
+        result["data"]["headers"] = dict(resp.getheaders())
 
         conn.close()
 
     except Exception as e:
+        result["status"] = "error"
+        result["data"] = {}
         result["error"] = str(e)
 
     return result
-

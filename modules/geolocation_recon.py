@@ -1,40 +1,48 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 #
-# geolocation_recon.py
+# File: geolocation_recon.py
+# Author: Wadih Khairallah
+# Description: 
+# Created: 2025-04-28 18:40:43
 
 import requests
+import socket
+import ipaddress
 
-def collect(query):
-    url = f"http://ip-api.com/json/{query}"
-    fields = "status,message,continent,continentCode,country,countryCode,region,regionName,city,district,zip,lat,lon,timezone,offset,currency,isp,org,as,asname,reverse,mobile,proxy,hosting,query"
-    params = {"fields": fields}
-
+def collect(target):
+    result = {
+        "status": "success",
+        "data": {}
+    }
     try:
-        response = requests.get(url, params=params)
-        data = response.json()
+        ip = target
+        try:
+            # If domain is given, resolve to IP
+            ipaddress.ip_address(target)
+        except ValueError:
+            ip = socket.gethostbyname(target)
 
-        if data.get("status") == "success":
-            return {
-                "country": data.get("country"),
-                "countryCode": data.get("countryCode"),
-                "region": data.get("region"),
-                "regionName": data.get("regionName"),
-                "city": data.get("city"),
-                "zip": data.get("zip"),
-                "lat": data.get("lat"),
-                "lon": data.get("lon"),
-                "timezone": data.get("timezone"),
-                "isp": data.get("isp"),
-                "org": data.get("org"),
-                "as": data.get("as"),
-                "query": data.get("query")
-            }
+        query_url = f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query"
+
+        resp = requests.get(query_url, timeout=10)
+
+        if resp.status_code == 200:
+            geo_data = resp.json()
+            if geo_data.get("status") == "success":
+                result["data"] = geo_data
+            else:
+                result["status"] = "error"
+                result["data"] = {}
+                result["error"] = geo_data.get("message", "Unknown error in GeoIP lookup.")
         else:
-            return {"error": data.get("message", "Unknown error")}
-    except Exception as e:
-        return {"error": str(e)}
+            result["status"] = "error"
+            result["data"] = {}
+            result["error"] = f"GeoIP service returned status code: {resp.status_code}"
 
-if __name__ == "__main__":
-    # Test with an IP address or domain name
-    test_query = "24.48.0.1"
-    print(collect(test_query))
+    except Exception as e:
+        result["status"] = "error"
+        result["data"] = {}
+        result["error"] = str(e)
+
+    return result

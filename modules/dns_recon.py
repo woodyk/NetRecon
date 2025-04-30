@@ -5,58 +5,56 @@
 # Author: Wadih Khairallah
 # Description: 
 # Created: 2025-04-28 15:53:58
-# Modified: 2025-04-28 17:49:50
-#!/usr/bin/env python3
-#
-# dns_recon.py
+# Modified: 2025-04-29 14:29:16
 
 import dns.resolver
 import dns.reversename
-import re
+import ipaddress
 
 def is_ip(address):
-    # Regular expression to check if the input is a valid IP address (IPv4 or IPv6)
-    ip_pattern = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$|^([a-fA-F0-9:]+:+)+[a-fA-F0-9]+$")
-    return bool(ip_pattern.match(address))
+    """
+    Check if the input is an IP address.
+    """
+    try:
+        ipaddress.ip_address(address)
+        return True
+    except ValueError:
+        return False
 
-def collect(address):
-    records = {}
+def collect(target):
+    result = {
+        "status": "success",
+        "data": {}
+    }
 
-    if is_ip(address):
-        # Process as IP address, attempt PTR lookup
-        try:
-            rev_name = dns.reversename.from_address(address)
-            records["PTR"] = [rdata.to_text() for rdata in dns.resolver.resolve(rev_name, "PTR")]
-        except Exception as e:
-            records["PTR_error"] = str(e)
-    else:
-        # Process as domain name, attempt various DNS record lookups
-        try:
-            records["A"] = [rdata.to_text() for rdata in dns.resolver.resolve(address, "A")]
-        except Exception as e:
-            records["A_error"] = str(e)
+    try:
+        resolver = dns.resolver.Resolver()
 
-        try:
-            records["AAAA"] = [rdata.to_text() for rdata in dns.resolver.resolve(address, "AAAA")]
-        except Exception as e:
-            records["AAAA_error"] = str(e)
+        if is_ip(target):
+            # Handle IP Address: perform PTR (reverse DNS)
+            try:
+                reversed_name = dns.reversename.from_address(target)
+                answers = resolver.resolve(reversed_name, "PTR", lifetime=5)
+                result["data"]["PTR"] = [str(rdata) for rdata in answers]
+            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.exception.Timeout) as e:
+                result["data"]["PTR_error"] = str(e)
+        else:
+            # Handle Domain: perform standard DNS lookups
+            record_types = ["A", "AAAA", "MX", "NS", "SOA", "TXT", "CNAME"]
 
-        try:
-            records["MX"] = [rdata.to_text() for rdata in dns.resolver.resolve(address, "MX")]
-        except Exception as e:
-            records["MX_error"] = str(e)
+            for rtype in record_types:
+                try:
+                    answers = resolver.resolve(target, rtype, lifetime=5)
+                    result["data"][rtype] = [str(rdata) for rdata in answers]
+                except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.exception.Timeout) as e:
+                    result["data"][f"{rtype}_error"] = str(e)
 
-        try:
-            records["TXT"] = [rdata.to_text() for rdata in dns.resolver.resolve(address, "TXT")]
-        except Exception as e:
-            records["TXT_error"] = str(e)
+    except Exception as e:
+        result["status"] = "error"
+        result["data"] = {}
+        result["error"] = str(e)
 
-        try:
-            records["NS"] = [rdata.to_text() for rdata in dns.resolver.resolve(address, "NS")]
-        except Exception as e:
-            records["NS_error"] = str(e)
-
-    return records
+    return result
 
 if __name__ == "__main__":
     # Test with both IP and domain name

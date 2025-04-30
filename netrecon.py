@@ -3,50 +3,37 @@
 #
 # File: netrecon.py
 # Author: Wadih Khairallah
-# Description: 
+# Description: NetRecon Orchestration Core (unaltered target unless CIDR)
 # Created: 2025-04-27 20:38:02
-# Modified: 2025-04-28 18:16:24
+# Modified: 2025-04-28 20:16:24
 
 import os
 import sys
 import json
-import socket
-import ipaddress
 import importlib.util
 import traceback
+import ipaddress
 from datetime import datetime, timezone
 
 # ===== Utility Functions =====
 
-def expand_ips(target):
+def expand_cidr(target):
     """
-    Expand the input target to a list of IPs.
-    Supports:
-        - Single IP
-        - CIDR block
-        - Domain (resolves to IP)
+    Expand a CIDR block to a list of IPs.
     """
     ips = []
     try:
-        # CIDR notation
-        if "/" in target:
-            net = ipaddress.ip_network(target, strict=False)
-            for ip in net.hosts():
-                ips.append(str(ip))
-        else:
-            # Try resolving domain to IP
-            ip = socket.gethostbyname(target)
-            ips.append(ip)
-    except Exception as e:
-        ips.append(target)  # fallback: treat as is
+        net = ipaddress.ip_network(target, strict=False)
+        for ip in net.hosts():
+            ips.append(str(ip))
+    except ValueError:
+        ips.append(target)  # Not a CIDR, treat as a single item
     return ips
 
 def aggregate_data(results):
     """
     Post-process results.
-    Currently a placeholder for future normalization.
     """
-    # Example: Move *_error fields under 'errors' sub-block in each module
     for module, data in results.items():
         if isinstance(data, dict):
             errors = {}
@@ -74,14 +61,16 @@ def dynamic_import(module_path, module_name):
 
 def run_recon_modules(target, modules_dir="modules"):
     """
-    Run all *_recon.py modules on the target.
+    Run all *_recon.py modules on the given target.
     """
     results = {}
     module_files = [f for f in os.listdir(modules_dir) if f.endswith("_recon.py")]
 
-    for module_file in sorted(module_files):  # alphabetical execution
-        module_name = module_file[:-3]  # remove '.py'
+    for module_file in sorted(module_files):
+        module_name = module_file[:-3]  # strip '.py'
         module_path = os.path.join(modules_dir, module_file)
+
+        print(f"[*] Running module: {module_name} on {target}")
 
         try:
             module = dynamic_import(module_path, module_name)
@@ -89,27 +78,46 @@ def run_recon_modules(target, modules_dir="modules"):
                 output = module.collect(target)
                 results[module_name] = output
             else:
-                results[module_name] = {"error": "Missing 'collect' function"}
+                results[module_name] = {"status": "error", "data": {}, "error": "Missing 'collect' function"}
         except Exception as e:
             results[module_name] = {
+                "status": "error",
+                "data": {},
                 "error": f"Failed to run {module_name}: {str(e)}",
                 "traceback": traceback.format_exc()
             }
+
+        print(f"[+] Completed module: {module_name} on {target}")
 
     return results
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: ./netrecon.py <target>")
+        print("Usage: ./netrecon.py <target or targets>")
         sys.exit(1)
 
-    input_target = sys.argv[1]
-    expanded_targets = expand_ips(input_target)
+    input_arg = sys.argv[1]
+
+    if "," in input_arg:
+        # Comma-separated list
+        targets = [t.strip() for t in input_arg.split(",") if t.strip()]
+    else:
+        targets = [input_arg.strip()]
+
+    final_targets = []
+
+    for target in targets:
+        if "/" in target:
+            # Expand CIDR blocks
+            expanded = expand_cidr(target)
+            final_targets.extend(expanded)
+        else:
+            final_targets.append(target)
 
     final_results = {}
 
-    for target in expanded_targets:
-        print(f"\n[+] Running NetRecon modules on: {target}\n")
+    for target in final_targets:
+        print(f"\n[+] Starting Recon on: {target}\n")
         results = run_recon_modules(target)
         results["timestamp"] = datetime.now(timezone.utc).isoformat()
         aggregated = aggregate_data(results)

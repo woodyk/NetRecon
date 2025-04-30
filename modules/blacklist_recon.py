@@ -5,49 +5,40 @@
 # Author: Wadih Khairallah
 # Description: 
 # Created: 2025-04-28 18:22:26
-#!/usr/bin/env python3
-#
-# blacklist_recon.py
+# Modified: 2025-04-28 18:37:17
 
 import requests
-import os
 
-API_KEY = os.getenv("ABUSEIPDB_API_KEY") 
-
-def collect(ip):
-    url = "https://api.abuseipdb.com/api/v2/check"
-    headers = {
-        "Key": API_KEY,
-        "Accept": "application/json"
+def collect(target):
+    result = {
+        "status": "success",
+        "data": {}
     }
-    params = {
-        "ipAddress": ip,
-        "maxAgeInDays": 90,
-        "verbose": ""
-    }
-
-    blacklist_results = {}
-
     try:
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            blacklist_results = {
-                "isPublic": data.get("data", {}).get("isPublic", "Unknown"),
-                "abuseConfidenceScore": data.get("data", {}).get("abuseConfidenceScore", "Unknown"),
-                "countryCode": data.get("data", {}).get("countryCode", "Unknown"),
-                "usageType": data.get("data", {}).get("usageType", "Unknown"),
-                "isp": data.get("data", {}).get("isp", "Unknown"),
-                "domain": data.get("data", {}).get("domain", "Unknown"),
-                "hostnames": data.get("data", {}).get("hostnames", [])
-            }
+        api_url = f"https://api.blacklistchecker.example.com/check/{target}"  # Placeholder URL
+
+        resp = requests.get(api_url, timeout=10)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            result["data"]["blacklist_info"] = data
+        elif resp.status_code == 401:
+            result["status"] = "error"
+            result["data"] = {}
+            result["error"] = "Unauthorized access to Blacklist API (401)."
+        elif resp.status_code == 422:
+            result["status"] = "error"
+            result["data"] = {}
+            result["error"] = "Not listed in blacklist services (422)."
         else:
-            blacklist_results = {"error": f"Not Listed, status code: {response.status_code}"}
+            result["status"] = "error"
+            result["data"] = {}
+            result["error"] = f"Unexpected response from Blacklist API: {resp.status_code}"
+
     except Exception as e:
-        blacklist_results = {"error": str(e)}
+        result["status"] = "error"
+        result["data"] = {}
+        result["error"] = str(e)
 
-    return {"blacklist": blacklist_results}
+    return result
 
-if __name__ == "__main__":
-    ip = "118.25.6.39"
-    print(collect(ip))
